@@ -13,6 +13,9 @@ PACKAGES_BASE=(
     python3-pip
     python3-venv
     python3-dev
+    swig
+    build-essential
+    liblgpio-dev
     i2c-tools
     git
     unzip
