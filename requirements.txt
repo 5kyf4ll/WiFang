@@ -1,0 +1,17 @@
+# ============================================================
+#  WiFang - WiFi Pentest Toolkit
+#  Dependencias Python
+# ============================================================
+
+# --- Hardware / GPIO ---
+# rpi-lgpio es drop-in compatible con RPi.GPIO y funciona en
+# kernels modernos (6.x) donde RPi.GPIO ya no compila.
+# El "import RPi.GPIO as GPIO" del código sigue funcionando.
+rpi-lgpio>=0.6
+
+# --- OLED / I2C ---
+adafruit-blinka>=8.40.0
+adafruit-circuitpython-ssd1306>=2.12.0
+
+# --- Imagen / fuentes / logo ---
+Pillow>=10.0.0
