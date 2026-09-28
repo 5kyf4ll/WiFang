@@ -6,7 +6,8 @@ from gui import oled_menu
 from modules import network
 from modules import attack_wps
 from modules import attack_handshake
-from modules import saved                     # <- NUEVO
+from modules import saved
+from modules import power                     # <- NUEVO
 
 # ------------------------------------------------------------------ #
 #  CONFIGURACIÓN DE BOTONES FÍSICOS                                  #
@@ -22,7 +23,8 @@ menu_options = [
     "Modo Monitor",
     "Handshake (Wifite)",
     "WPS Attack",
-    "Guardados",                              # <- NUEVO
+    "Guardados",
+    "Energia",                                # <- NUEVO
 ]
 current_selection = 0
 
@@ -134,8 +136,12 @@ def main_menu_loop():
                     attack_wps.start_wps_attack_loop()
                     time.sleep(0.3)
 
-            elif current_selection == 3:                # <- NUEVO
+            elif current_selection == 3:
                 saved.start_saved_loop()
+                time.sleep(0.3)
+
+            elif current_selection == 4:                # <- NUEVO
+                power.start_power_loop()
                 time.sleep(0.3)
 
         time.sleep(0.05)
