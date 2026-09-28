@@ -6,6 +6,7 @@ from gui import oled_menu
 from modules import network
 from modules import attack_wps
 from modules import attack_handshake
+from modules import saved                     # <- NUEVO
 
 # ------------------------------------------------------------------ #
 #  CONFIGURACIÓN DE BOTONES FÍSICOS                                  #
@@ -21,6 +22,7 @@ menu_options = [
     "Modo Monitor",
     "Handshake (Wifite)",
     "WPS Attack",
+    "Guardados",                              # <- NUEVO
 ]
 current_selection = 0
 
@@ -52,7 +54,6 @@ def interfaces_menu_loop():
             time.sleep(2)
             break
 
-        # Generar las cadenas de texto del menú incluyendo indicador de modo monitor
         items_text = []
         for iface in ifaces:
             status_indicator = " [*]" if iface["monitor"] else ""
@@ -72,11 +73,9 @@ def interfaces_menu_loop():
         elif GPIO.input(config.BTN_SELECT) == GPIO.LOW:
             time.sleep(0.3)
 
-            # Opción de salida del submenú
             if iface_idx == len(items_text) - 1:
                 break
 
-            # Interacción con una interfaz de red específica
             selected_iface = ifaces[iface_idx]
             oled_menu.show_message("CAMBIANDO MODO", "Configurando...", selected_iface["name"])
 
@@ -85,7 +84,7 @@ def interfaces_menu_loop():
                 if not selected_iface["monitor"]:
                     config.INTERFACE = selected_iface["name"]
                 elif config.INTERFACE == selected_iface["name"]:
-                    config.INTERFACE = ""  # Reset si se quita el modo monitor a la activa
+                    config.INTERFACE = ""
                 oled_menu.show_message("PROCESO EXITOSO", "Cambio aplicado", "correctamente")
             else:
                 oled_menu.show_message("ERROR SISTEMA", "No se pudo cambiar", "el modo")
@@ -95,15 +94,11 @@ def interfaces_menu_loop():
 def main_menu_loop():
     global current_selection
 
-    # ------------------------------------------------------------ #
-    #  INTRO: LOGO WIFANG                                          #
-    # ------------------------------------------------------------ #
+    # Intro: logo WiFang
     oled_menu.draw_logo()
     time.sleep(1.5)
 
-    # ------------------------------------------------------------ #
-    #  AUTODETECCIÓN DE HARDWARE AL ARRANCAR                       #
-    # ------------------------------------------------------------ #
+    # Autodetección de hardware al arrancar
     auto_check_network()
 
     while True:
@@ -121,7 +116,6 @@ def main_menu_loop():
             time.sleep(0.3)
 
             if current_selection == 0:
-                # Menú dinámico de antenas
                 interfaces_menu_loop()
 
             elif current_selection == 1:
@@ -139,6 +133,10 @@ def main_menu_loop():
                 else:
                     attack_wps.start_wps_attack_loop()
                     time.sleep(0.3)
+
+            elif current_selection == 3:                # <- NUEVO
+                saved.start_saved_loop()
+                time.sleep(0.3)
 
         time.sleep(0.05)
 
