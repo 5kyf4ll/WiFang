@@ -1,0 +1,20 @@
+# Entorno virtual creado por scripts/02-python-env.sh
+venv/
+
+# Diccionario descomprimido por scripts/02-python-env.sh (~140 MB).
+# En el repo va solo el .gz.
+modules/wordlist.txt
+
+# Resultados de wifite
+cracked.json
+
+# Capturas y temporales de los escaneos
+*.cap
+*.csv
+*.netxml
+*.kismet.csv
+hs/
+
+# Python
+__pycache__/
+*.py[cod]
