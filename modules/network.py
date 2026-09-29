@@ -45,17 +45,19 @@ def toggle_monitor_mode(iface_name, current_state):
     Cambia el estado de la interfaz. Si está en managed, la pasa a monitor.
     Si está en monitor, la regresa a managed. Usa comandos nativos estables.
     """
+    # Sin shell: el nombre de la interfaz va como argumento y no como
+    # texto que interprete /bin/sh. Además estos son exactamente los
+    # tres comandos que autoriza /etc/sudoers.d/wifang.
+    nuevo_tipo = "managed" if current_state else "monitor"
+    comandos = [
+        ["sudo", "ip", "link", "set", iface_name, "down"],
+        ["sudo", "iw", "dev", iface_name, "set", "type", nuevo_tipo],
+        ["sudo", "ip", "link", "set", iface_name, "up"],
+    ]
+
     try:
-        if not current_state:
-            # Pasar a modo Monitor de forma limpia y directa
-            subprocess.run(f"sudo ip link set {iface_name} down", shell=True, check=True)
-            subprocess.run(f"sudo iw dev {iface_name} set type monitor", shell=True, check=True)
-            subprocess.run(f"sudo ip link set {iface_name} up", shell=True, check=True)
-        else:
-            # Regresar a modo Managed (Estándar)
-            subprocess.run(f"sudo ip link set {iface_name} down", shell=True, check=True)
-            subprocess.run(f"sudo iw dev {iface_name} set type managed", shell=True, check=True)
-            subprocess.run(f"sudo ip link set {iface_name} up", shell=True, check=True)
+        for comando in comandos:
+            subprocess.run(comando, check=True)
         return True
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         return False
