@@ -11,37 +11,89 @@ SUDOERS_FILE="/etc/sudoers.d/wifang"
 # Nota: si el servicio systemd corre como root, esta regla es  #
 # un extra de seguridad. Aun así la dejamos por si ejecutas    #
 # main.py manualmente desde terminal.                          #
+#                                                              #
+# Las rutas se resuelven en el sistema en vez de fijarse a     #
+# mano: en Debian / Raspberry Pi OS 'iw' vive en /usr/sbin y   #
+# 'aircrack-ng' en /usr/bin, así que las rutas fijas no        #
+# coincidían y sudo pedía contraseña.                          #
+#                                                              #
+# 'ip' e 'iw' llevan los argumentos acotados a las operaciones #
+# que ejecuta modules/network.py. Un NOPASSWD sobre 'ip'       #
+# completo permite 'sudo ip netns exec <ns> /bin/sh'.          #
 # ------------------------------------------------------------ #
 
+BIN_DIRS=(/usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin)
+
+# Rutas existentes de un binario, en el mismo orden de prioridad
+# que el secure_path de sudo. Debian instala 'ip' tanto en
+# /usr/bin como en /usr/sbin (son ficheros distintos) y sudo
+# resuelve por secure_path, así que hay que cubrir las dos.
+# Se omiten los alias por enlace simbólico (/sbin -> /usr/sbin).
+find_paths() {
+    local name="$1" dir real
+    local -A vistos=()
+    for dir in "${BIN_DIRS[@]}"; do
+        [[ -x "$dir/$name" ]] || continue
+        real=$(readlink -f "$dir/$name")
+        [[ -n "${vistos[$real]:-}" ]] && continue
+        vistos[$real]=1
+        printf '%s\n' "$dir/$name"
+    done
+    return 0
+}
+
+RULES=""
+
+add_rule() {
+    RULES+="$REAL_USER ALL=(ALL) NOPASSWD: $1"$'\n'
+}
+
+# ------------------------------------------------------------ #
+#  Gestión de interfaces de red                                #
+# ------------------------------------------------------------ #
+RULES+=$'# Gestión de interfaces de red (argumentos acotados)\n'
+
+while IFS= read -r bin; do
+    [[ -n "$bin" ]] || continue
+    add_rule "$bin link set * up"
+    add_rule "$bin link set * down"
+done < <(find_paths ip)
+
+while IFS= read -r bin; do
+    [[ -n "$bin" ]] || continue
+    add_rule "$bin dev * set type monitor"
+    add_rule "$bin dev * set type managed"
+done < <(find_paths iw)
+
+# ------------------------------------------------------------ #
+#  Herramientas de pentesting y apagado                        #
+# ------------------------------------------------------------ #
+RULES+=$'\n# Herramientas de pentesting y sistema\n'
+
+for tool in airmon-ng airodump-ng aireplay-ng aircrack-ng rfkill \
+            wifite wash reaver bully hcxdumptool hcxpcapngtool \
+            shutdown reboot; do
+    found=0
+    while IFS= read -r bin; do
+        [[ -n "$bin" ]] || continue
+        add_rule "$bin"
+        found=1
+    done < <(find_paths "$tool")
+    if [[ $found -eq 0 ]]; then
+        echo "[!] $tool no está instalado: sin regla sudoers"
+    fi
+done
+
+# ------------------------------------------------------------ #
+#  Escribir el fichero                                         #
+# ------------------------------------------------------------ #
 echo "[*] Escribiendo regla sudoers en $SUDOERS_FILE"
 
 cat > "$SUDOERS_FILE" <<EOF
 # WiFang - permisos sin contraseña
 # Generado automáticamente por install.sh
 
-# Gestión de interfaces de red
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/airodump-ng
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/aireplay-ng
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/aircrack-ng
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/iw
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/ip
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
-
-# Herramientas de pentesting
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/wifite
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/wifite
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/wash
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/reaver
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bully
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/hcxdumptool
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/hcxpcapngtool
-
-# Sistema (apagado / reinicio)
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/shutdown
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/sbin/reboot
-$REAL_USER ALL=(ALL) NOPASSWD: /sbin/shutdown
-$REAL_USER ALL=(ALL) NOPASSWD: /sbin/reboot
+$RULES
 EOF
 
 # ------------------------------------------------------------ #

@@ -139,7 +139,7 @@ def run_wifite_wps(target_bssid):
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        preexec_fn=os.setsid,
+        start_new_session=True,
         close_fds=True,
     )
     os.close(slave)
