@@ -111,3 +111,22 @@ echo ""
 echo "  Para desinstalar:"
 echo "    sudo bash uninstall.sh"
 echo ""
+
+# ------------------------------------------------------------ #
+#  Preguntar si reiniciar ahora                               #
+# ------------------------------------------------------------ #
+echo ""
+read -p "¿Reiniciar ahora para aplicar los cambios? [s/N] " -n 1 -r
+echo
+
+if [[ $REPLY =~ ^[SsYy]$ ]]; then
+    echo ""
+    echo "[*] Reiniciando en 3 segundos..."
+    echo "    (Ctrl+C para cancelar)"
+    sleep 3
+    systemctl reboot
+else
+    echo ""
+    echo "[*] No se reinició."
+    echo "    Puedes hacerlo manualmente cuando quieras con: sudo reboot"
+fi
