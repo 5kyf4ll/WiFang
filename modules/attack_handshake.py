@@ -219,7 +219,7 @@ def start_handshake_attack_loop():
             # ESTADO 1: MENÚ DE SELECCIÓN                          #
             # ==================================================== #
             if estado == "LISTA":
-                oled_menu.draw_menu("HANDSHAKE (WIFITE)", items_menu, index)
+                oled_menu.draw_menu("HANDSHAKE", items_menu, index)
 
                 if GPIO.input(config.BTN_UP) == GPIO.LOW:
                     index = (index - 1) % len(items_menu)

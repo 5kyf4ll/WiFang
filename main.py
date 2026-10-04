@@ -21,7 +21,7 @@ for btn in [config.BTN_UP, config.BTN_DOWN, config.BTN_SELECT]:
 # ------------------------------------------------------------------ #
 menu_options = [
     "Modo Monitor",
-    "Handshake (Wifite)",
+    "Handshake",
     "WPS Attack",
     "Guardados",
     "Energia",                                # <- NUEVO
