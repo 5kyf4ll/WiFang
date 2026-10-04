@@ -54,7 +54,7 @@ WiFang ofrece un menú principal con las siguientes opciones:
 | Módulo | Descripción |
 |--------|-------------|
 | **Modo Monitor** | Detecta antenas WiFi disponibles y las activa/desactiva en modo monitor. |
-| **Handshake (Wifite)** | Escanea redes con clientes activos, lanza deauth y captura handshakes WPA/WPA2 con wifite. |
+| **Handshake** | Escanea redes con clientes activos, lanza deauth y captura handshakes WPA/WPA2 con wifite. |
 | **WPS Attack** | Escanea redes con WPS activo (wash) y ataca el PIN con wifite (reaver/bully). |
 | **Guardados** | Lista las redes crackeadas con su contraseña (lectura de `cracked.json`). |
 | **Energía** | Apagado y reinicio del dispositivo con confirmación por botones. |
