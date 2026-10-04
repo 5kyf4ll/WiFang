@@ -84,9 +84,40 @@ WiFang ofrece un menú principal con las siguientes opciones:
 - Pantalla OLED SSD1306 128×64 con interfaz I2C.
 - 3 botones pulsadores (tipo táctil o mecánico).
 
-### Instalación en 3 pasos
+### Instalación en 4 pasos
 
 1. Clona el repositorio en la Raspberry Pi:
    ```bash
-   git clone https://github.com/tu-usuario/WiFang.git
+   git clone https://github.com/5kyf4ll/WiFang.git
    cd WiFang
+2. Darle permisos:
+   ```bash
+   chmod +x install.sh uninstall.sh scripts/*.sh
+3. Ejecuta el instalador:
+   ```bash
+   sudo bash install.sh
+4. Reinicia para aplicar los cambios:
+   ```bash
+   sudo bash install.sh
+El instalador se encarga de:
+
+- Instalar todas las dependencias del sistema (aircrack-ng, wifite, reaver, bully, hcxtools, etc.).
+- Crear el entorno virtual de Python e instalar los requirements.txt.
+- Configurar las reglas sudoers para operación sin contraseña.
+- Instalar y habilitar el servicio systemd.
+- Activar I2C y configurar NetworkManager.
+- Verificar que todo quede correctamente instalado.
+
+### Desinstalación
+    ```bash
+    sudo bash uninstall.sh
+Elimina el servicio, las reglas sudoers, la configuración de NetworkManager y, opcionalmente, el entorno virtual y los datos generados.
+
+### Video demostrativo
+<p align="center"> <a href="https://www.youtube.com/watch?v=XXXXXXX"> <img src="https://img.youtube.com/vi/XXXXXXX/0.jpg" width="600"> </a> </p>
+
+## Aviso importante - Uso responsable
+Este proyecto es **exclusivamente** para fines educativos, pruebas en laboratorio y auditoría interna.
+**No debe usarse** para espiar, monitorizar o capturar datos en equipos o redes sin consentimiento expreso del propietario.
+El autor **no se responsabiliza** por el uso indebido.
+Antes de ejecutar cualquier código, asegúrate de tener permiso y de cumplir la ley local y las políticas de tu organización.
